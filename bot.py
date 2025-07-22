@@ -1,24 +1,40 @@
-import logging
-from telegram.ext import Updater, CommandHandler
-from config import TELEGRAM_TOKEN, ALLOWED_USER_IDS
-from suggest import handle_suggest
+import telebot
+from suggest import suggest_trades
+from config import BOT_TOKEN, ALLOWED_USER_IDS
 
-logging.basicConfig(level=logging.INFO)
+bot = telebot.TeleBot(BOT_TOKEN)
 
-def start(update, context):
-    user_id = update.effective_user.id
-    if user_id not in ALLOWED_USER_IDS:
-        update.message.reply_text("❌ Unauthorized.")
+@bot.message_handler(commands=['start'])
+def start_message(message):
+    if message.from_user.id in ALLOWED_USER_IDS:
+        bot.send_message(message.chat.id, "✅ Welcome! Send /suggest to get trade ideas.")
+    else:
+        bot.send_message(message.chat.id, "🚫 You are not authorized to use this bot.")
+
+@bot.message_handler(commands=['suggest'])
+def handle_suggest(message):
+    if message.from_user.id not in ALLOWED_USER_IDS:
+        bot.send_message(message.chat.id, "🚫 Unauthorized.")
         return
-    update.message.reply_text("✅ Send /suggest to get top MEXC AI-based trade ideas.")
 
-def main():
-    updater = Updater(token=TELEGRAM_TOKEN, use_context=True)
-    dp = updater.dispatcher
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("suggest", handle_suggest))
-    updater.start_polling()
-    updater.idle()
+    bot.send_message(message.chat.id, "🔍 Scanning market for smart trades...")
 
-if __name__ == "__main__":
-    main()
+    trades = suggest_trades()
+    if not trades:
+        bot.send_message(message.chat.id, "😓 No safe trade found with ≥35M volume and RR ≥ 2.2.")
+        return
+
+    for t in trades:
+        reply = f"""
+📈 *Symbol:* `{t['symbol']}`
+💰 *Entry:* `{t['entry']}`
+🎯 *TP:* `{t['take_profit']}`
+🛑 *SL:* `{t['stop_loss']}`
+📊 *RR:* `{t['rr']}x`
+📦 *Volume:* `{round(t['volume']/1e6, 2)}M USDT`
+📌 *Leverage:* `{t['leverage']}x`
+        """
+        bot.send_message(message.chat.id, reply.strip(), parse_mode="Markdown")
+
+# Start polling
+bot.polling()
