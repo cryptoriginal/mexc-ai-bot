@@ -1,38 +1,24 @@
 import telebot
-from suggest import suggest_trades
 from config import BOT_TOKEN, ALLOWED_USER_IDS
+from suggest import get_trade_suggestions
 
 bot = telebot.TeleBot(BOT_TOKEN)
-
-@bot.message_handler(commands=['start'])
-def start_message(message):
-    if message.from_user.id in ALLOWED_USER_IDS:
-        bot.send_message(message.chat.id, "✅ Welcome! Send /suggest to get trade ideas.")
-    else:
-        bot.send_message(message.chat.id, "🚫 You are not authorized to use this bot.")
+bot.remove_webhook()  # Ensures getUpdates works without webhook conflict
 
 @bot.message_handler(commands=['suggest'])
 def handle_suggest(message):
-    if message.from_user.id not in ALLOWED_USER_IDS:
-        bot.send_message(message.chat.id, "🚫 Unauthorized.")
-        return
+    if message.from_user.id in ALLOWED_USER_IDS:
+        suggestions = get_trade_suggestions()
+        if suggestions:
+            for s in suggestions:
+                bot.send_message(message.chat.id, s)
+        else:
+            bot.send_message(message.chat.id, "No good trade setups found at the moment.")
+    else:
+        bot.send_message(message.chat.id, "Access denied.")
 
-    bot.send_message(message.chat.id, "🔍 Scanning market for smart trades...")
+bot.polling(non_stop=True)
 
-    trades = suggest_trades()
-    if not trades:
-        bot.send_message(message.chat.id, "😓 No safe trade found with ≥35M volume and RR ≥ 2.2.")
-        return
-
-    for t in trades:
-        reply = f"""
-📈 *Symbol:* `{t['symbol']}`
-💰 *Entry:* `{t['entry']}`
-🎯 *TP:* `{t['take_profit']}`
-🛑 *SL:* `{t['stop_loss']}`
-📊 *RR:* `{t['rr']}x`
-📦 *Volume:* `{round(t['volume']/1e6, 2)}M USDT`
-📌 *Leverage:* `{t['leverage']}x`
         """
         bot.send_message(message.chat.id, reply.strip(), parse_mode="Markdown")
 
