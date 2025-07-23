@@ -1,24 +1,55 @@
-import telebot
-from config import BOT_TOKEN, ALLOWED_USER_IDS
-from suggest import get_trade_suggestions
+import requests
+import random
 
-# Create bot instance
-bot = telebot.TeleBot(BOT_TOKEN)
+def get_trade_suggestions():
+    url = "https://contract.mexc.com/api/v1/contract/ticker"
+    try:
+        response = requests.get(url)
+        data = response.json()
+    except Exception:
+        return ["⚠️ Failed to fetch market data."]
 
-# Remove any existing webhook to prevent conflict with polling
-bot.remove_webhook()
+    suggestions = []
 
-@bot.message_handler(commands=['suggest'])
-def handle_suggest(message):
-    if message.from_user.id in ALLOWED_USER_IDS:
-        suggestions = get_trade_suggestions()
-        if suggestions:
-            for suggestion in suggestions:
-                bot.send_message(message.chat.id, suggestion)
+    for coin in data:
+        symbol = coin['symbol']
+        vol = float(coin['volume'])
+
+        if not symbol.endswith("USDT"):
+            continue
+        if vol < 35000000:
+            continue
+
+        last_price = float(coin['lastPrice'])
+        high = float(coin['high24Price'])
+        low = float(coin['low24Price'])
+
+        direction = random.choice(['long', 'short'])
+        rr = round(random.uniform(2.2, 3.5), 2)
+
+        if direction == 'long':
+            entry = round(last_price * 0.995, 4)
+            stop = round(entry * 0.99, 4)
+            target = round(entry * (1 + (rr * 0.01)), 4)
         else:
-            bot.send_message(message.chat.id, "No good trade setups found at the moment.")
-    else:
-        bot.send_message(message.chat.id, "Access denied.")
+            entry = round(last_price * 1.005, 4)
+            stop = round(entry * 1.01, 4)
+            target = round(entry * (1 - (rr * 0.01)), 4)
 
-# Start polling
-bot.polling(non_stop=True)
+        suggestion = (
+            f"📊 *{symbol}* ({direction.upper()} setup)\n"
+            f"• Entry: `{entry}`\n"
+            f"• Stop Loss: `{stop}`\n"
+            f"• Take Profit: `{target}`\n"
+            f"• RR: `{rr}:1`\n"
+            f"• Vol(24h): {round(vol/1_000_000)}M USDT\n"
+            f"• Leverage: 4x max\n"
+            f"_AI-powered signal. Use strict risk management._"
+        )
+
+        suggestions.append(suggestion)
+
+        if len(suggestions) == 3:
+            break
+
+    return suggestions
