@@ -1,74 +1,101 @@
 import requests
+import numpy as np
+import pandas as pd
+from datetime import datetime, timedelta
 
 MIN_VOLUME = 35_000_000
 MIN_RR = 2.2
 
 def fetch_mexc_futures():
-    url = "https://contract.mexc.com/api/v1/contract/kline/1m"
     try:
-        tickers = requests.get("https://contract.mexc.com/api/v1/contract/ticker", timeout=10).json().get("data", [])
-        pairs = []
-        for ticker in tickers:
-            if float(ticker['amount24']) < MIN_VOLUME:
-                continue
-            symbol = ticker['symbol']
-            candles = requests.get(f"{url}?symbol={symbol}&limit=30", timeout=10).json().get("data", [])
-            if len(candles) < 10:
-                continue
-            pairs.append({"symbol": symbol, "volume": float(ticker['amount24']), "lastPrice": float(ticker['lastPrice']), "candles": candles})
-        return pairs
-    except Exception as e:
-        print("❌ Error fetching data:", e)
+        url = "https://contract.mexc.com/api/v1/contract/ticker"
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        return r.json().get("data", [])
+    except:
         return []
 
-def detect_reversal(candles):
-    last = candles[-2]
-    body = abs(float(last[1]) - float(last[4]))
-    wick_top = float(last[2]) - max(float(last[1]), float(last[4]))
-    wick_bottom = min(float(last[1]), float(last[4])) - float(last[3])
+def fetch_ohlcv(symbol):
+    try:
+        url = f"https://contract.mexc.com/api/v1/contract/kline/{symbol}?interval=1m&limit=100"
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        data = r.json().get("data", [])
+        df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        df = df.astype(float)
+        return df
+    except:
+        return pd.DataFrame()
 
-    # Bullish reversal candle (e.g. hammer)
-    if wick_bottom > 2 * body and body > 0:
-        return 'long'
-    # Bearish reversal candle (e.g. inverted hammer / shooting star)
-    elif wick_top > 2 * body and body > 0:
-        return 'short'
+def detect_reversal_candle(df):
+    last = df.iloc[-1]
+    body = abs(last.close - last.open)
+    range_total = last.high - last.low
+
+    # Bullish Hammer or Doji
+    if (last.close > last.open and last.low <= df.low[-5:-1].min()) and (body < 0.4 * range_total):
+        return "bullish"
+    # Bearish Engulfing or Shooting Star
+    if (last.open > last.close and last.high >= df.high[-5:-1].max()) and (body < 0.4 * range_total):
+        return "bearish"
+    return None
+
+def get_sr_levels(df):
+    recent = df[-30:]
+    support = recent.low.min()
+    resistance = recent.high.max()
+    return support, resistance
+
+def calculate_tp_sl(entry, direction, support, resistance):
+    if direction == "long":
+        stop_loss = support
+        risk = entry - stop_loss
+        take_profit = entry + risk * MIN_RR
     else:
-        return None
+        stop_loss = resistance
+        risk = stop_loss - entry
+        take_profit = entry - risk * MIN_RR
+
+    if risk <= 0:
+        return None, None  # invalid
+    return round(stop_loss, 4), round(take_profit, 4)
 
 def suggest_trades():
     pairs = fetch_mexc_futures()
     results = []
 
     for p in pairs:
-        side = detect_reversal(p['candles'])
-        if not side:
+        vol = float(p['amount24'])
+        if vol < MIN_VOLUME:
             continue
 
-        price = p['lastPrice']
-        leverage = 3
-
-        if side == 'long':
-            sl = round(price * 0.985, 4)  # 1.5% SL
-            tp = round(price + (price - sl) * MIN_RR, 4)
-        else:
-            sl = round(price * 1.015, 4)  # 1.5% SL above
-            tp = round(price - (sl - price) * MIN_RR, 4)
-
-        rr = round(abs(tp - price) / abs(price - sl), 2)
-        if rr < MIN_RR:
+        symbol = p['symbol']
+        df = fetch_ohlcv(symbol)
+        if df.empty or len(df) < 30:
             continue
 
-        results.append({
-            "symbol": p['symbol'],
-            "entry": price,
-            "stop_loss": sl,
-            "take_profit": tp,
-            "rr": rr,
-            "volume": p['volume'],
-            "leverage": leverage,
-            "side": side
-        })
+        direction = detect_reversal_candle(df)
+        if direction is None:
+            continue
+
+        support, resistance = get_sr_levels(df)
+        entry = float(df.close.iloc[-1])
+        sl, tp = calculate_tp_sl(entry, direction, support, resistance)
+
+        if sl and tp:
+            rr = abs((tp - entry) / (entry - sl)) if direction == "long" else abs((entry - tp) / (sl - entry))
+            if rr >= MIN_RR:
+                results.append({
+                    "symbol": symbol,
+                    "entry": entry,
+                    "stop_loss": sl,
+                    "take_profit": tp,
+                    "rr": round(rr, 2),
+                    "volume": vol,
+                    "leverage": 3,
+                    "side": direction
+                })
 
     return sorted(results, key=lambda x: x['rr'], reverse=True)[:3]
+
 
