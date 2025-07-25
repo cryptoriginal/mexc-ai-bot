@@ -1,5 +1,5 @@
 import telebot
-from suggest import fetch_mexc_futures
+from suggest import suggest_trades
 from config import BOT_TOKEN, ALLOWED_USER_IDS
 
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -7,9 +7,9 @@ bot = telebot.TeleBot(BOT_TOKEN)
 @bot.message_handler(commands=['start'])
 def start_message(message):
     if message.from_user.id in ALLOWED_USER_IDS:
-        bot.send_message(message.chat.id, "✅ Welcome! Use /suggest to get trade ideas.")
+        bot.send_message(message.chat.id, "✅ Welcome! Send /suggest to get trade ideas.")
     else:
-        bot.send_message(message.chat.id, "🚫 You're not authorized to use this bot.")
+        bot.send_message(message.chat.id, "🚫 You are not authorized to use this bot.")
 
 @bot.message_handler(commands=['suggest'])
 def handle_suggest(message):
@@ -19,14 +19,16 @@ def handle_suggest(message):
 
     bot.send_message(message.chat.id, "🔍 Analyzing market, please wait...")
 
-    trades = fetch_mexc_futures()
-    if not trades:
-        bot.send_message(message.chat.id, "❌ No trade signals found.")
-        return
+    try:
+        trades = suggest_trades()
+        if not trades:
+            bot.send_message(message.chat.id, "😓 No high-quality trade found.")
+            return
 
-    for t in trades:
-        reply = f"""
-📉 *{t['side'].upper()} SIGNAL*
+        for t in trades:
+            direction = "🔼 Long" if t['side'] == 'long' else "🔽 Short"
+            reply = f"""
+{direction} Trade Signal
 📈 *Symbol:* `{t['symbol']}`
 💰 *Entry:* `{t['entry']}`
 🎯 *TP:* `{t['take_profit']}`
@@ -34,8 +36,11 @@ def handle_suggest(message):
 📊 *RR:* `{t['rr']}x`
 📦 *Volume:* `{round(t['volume']/1e6, 2)}M USDT`
 📌 *Leverage:* `{t['leverage']}x`
-        """
-        bot.send_message(message.chat.id, reply.strip(), parse_mode="Markdown")
+"""
+            bot.send_message(message.chat.id, reply.strip(), parse_mode="Markdown")
+
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Error: {str(e)}")
 
 bot.polling()
 
