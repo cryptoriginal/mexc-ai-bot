@@ -1,5 +1,5 @@
 import telebot
-from suggest import suggest_trades
+from suggest import fetch_mexc_futures
 from config import BOT_TOKEN, ALLOWED_USER_IDS
 
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -7,9 +7,9 @@ bot = telebot.TeleBot(BOT_TOKEN)
 @bot.message_handler(commands=['start'])
 def start_message(message):
     if message.from_user.id in ALLOWED_USER_IDS:
-        bot.send_message(message.chat.id, "✅ Welcome! Use /suggest for trades.")
+        bot.send_message(message.chat.id, "✅ Welcome! Use /suggest to get trade ideas.")
     else:
-        bot.send_message(message.chat.id, "🚫 You're not authorized.")
+        bot.send_message(message.chat.id, "🚫 You're not authorized to use this bot.")
 
 @bot.message_handler(commands=['suggest'])
 def handle_suggest(message):
@@ -17,11 +17,11 @@ def handle_suggest(message):
         bot.send_message(message.chat.id, "🚫 Unauthorized.")
         return
 
-    bot.send_message(message.chat.id, "🔍 Analyzing charts...")
+    bot.send_message(message.chat.id, "🔍 Analyzing market, please wait...")
 
-    trades = suggest_trades()
+    trades = fetch_mexc_futures()
     if not trades:
-        bot.send_message(message.chat.id, "😓 No valid trade found.")
+        bot.send_message(message.chat.id, "❌ No trade signals found.")
         return
 
     for t in trades:
@@ -39,8 +39,3 @@ def handle_suggest(message):
 
 bot.polling()
 
-        """
-        bot.send_message(message.chat.id, reply.strip(), parse_mode="Markdown")
-
-# Start polling
-bot.polling()
