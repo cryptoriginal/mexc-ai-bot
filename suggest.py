@@ -1,88 +1,74 @@
 import requests
-import numpy as np
 
 MIN_VOLUME = 35_000_000
 MIN_RR = 2.2
 
 def fetch_mexc_futures():
-    url = "https://contract.mexc.com/api/v1/contract/kline"
-    symbols_url = "https://contract.mexc.com/api/v1/contract/ticker"
-
+    url = "https://contract.mexc.com/api/v1/contract/kline/1m"
     try:
-        symbols = requests.get(symbols_url, timeout=10).json().get("data", [])
-        selected = [s for s in symbols if float(s['amount24']) >= MIN_VOLUME]
-
-        trades = []
-        for sym in selected[:50]:
-            pair = sym['symbol']
-            kline_url = f"{url}?symbol={pair}&interval=5m&limit=50"
-            klines = requests.get(kline_url).json().get("data", [])
-            if len(klines) < 20:
+        tickers = requests.get("https://contract.mexc.com/api/v1/contract/ticker", timeout=10).json().get("data", [])
+        pairs = []
+        for ticker in tickers:
+            if float(ticker['amount24']) < MIN_VOLUME:
                 continue
-
-            candles = parse_klines(klines)
-            signal = detect_signal(candles)
-            if not signal:
+            symbol = ticker['symbol']
+            candles = requests.get(f"{url}?symbol={symbol}&limit=30", timeout=10).json().get("data", [])
+            if len(candles) < 10:
                 continue
-
-            entry = float(klines[-1][4])  # last close
-            sl, tp = calculate_sl_tp(entry, signal['side'], candles)
-            rr = round(abs((tp - entry) / (entry - sl)), 2)
-
-            if rr >= MIN_RR:
-                trades.append({
-                    "symbol": pair,
-                    "entry": round(entry, 4),
-                    "stop_loss": round(sl, 4),
-                    "take_profit": round(tp, 4),
-                    "rr": rr,
-                    "volume": float(sym['amount24']),
-                    "leverage": 3,
-                    "side": signal['side'],
-                })
-        return sorted(trades, key=lambda x: x['rr'], reverse=True)[:3]
-
+            pairs.append({"symbol": symbol, "volume": float(ticker['amount24']), "lastPrice": float(ticker['lastPrice']), "candles": candles})
+        return pairs
     except Exception as e:
-        print("Error fetching data:", e)
+        print("❌ Error fetching data:", e)
         return []
 
-def parse_klines(raw):
-    return [{
-        "open": float(k[1]),
-        "high": float(k[2]),
-        "low": float(k[3]),
-        "close": float(k[4]),
-    } for k in raw]
+def detect_reversal(candles):
+    last = candles[-2]
+    body = abs(float(last[1]) - float(last[4]))
+    wick_top = float(last[2]) - max(float(last[1]), float(last[4]))
+    wick_bottom = min(float(last[1]), float(last[4])) - float(last[3])
 
-def detect_signal(candles):
-    last = candles[-1]
-    prev = candles[-2]
-
-    body = abs(last['close'] - last['open'])
-    range_ = last['high'] - last['low']
-    upper_shadow = last['high'] - max(last['open'], last['close'])
-    lower_shadow = min(last['open'], last['close']) - last['low']
-
-    if lower_shadow > 2 * body and upper_shadow < 0.3 * body:
-        return {"side": "long"}
-    elif upper_shadow > 2 * body and lower_shadow < 0.3 * body:
-        return {"side": "short"}
-    elif prev['close'] < prev['open'] and last['close'] > last['open'] and last['close'] > prev['open'] and last['open'] < prev['close']:
-        return {"side": "long"}
-    elif prev['close'] > prev['open'] and last['close'] < last['open'] and last['close'] < prev['open'] and last['open'] > prev['close']:
-        return {"side": "short"}
-
-    return None
-
-def calculate_sl_tp(entry, side, candles):
-    closes = [c['close'] for c in candles[-20:]]
-    avg_move = np.std(closes) * 1.5
-
-    if side == "long":
-        sl = entry - avg_move
-        tp = entry + avg_move * 2.2
+    # Bullish reversal candle (e.g. hammer)
+    if wick_bottom > 2 * body and body > 0:
+        return 'long'
+    # Bearish reversal candle (e.g. inverted hammer / shooting star)
+    elif wick_top > 2 * body and body > 0:
+        return 'short'
     else:
-        sl = entry + avg_move
-        tp = entry - avg_move * 2.2
-    return sl, tp
+        return None
+
+def suggest_trades():
+    pairs = fetch_mexc_futures()
+    results = []
+
+    for p in pairs:
+        side = detect_reversal(p['candles'])
+        if not side:
+            continue
+
+        price = p['lastPrice']
+        leverage = 3
+
+        if side == 'long':
+            sl = round(price * 0.985, 4)  # 1.5% SL
+            tp = round(price + (price - sl) * MIN_RR, 4)
+        else:
+            sl = round(price * 1.015, 4)  # 1.5% SL above
+            tp = round(price - (sl - price) * MIN_RR, 4)
+
+        rr = round(abs(tp - price) / abs(price - sl), 2)
+        if rr < MIN_RR:
+            continue
+
+        results.append({
+            "symbol": p['symbol'],
+            "entry": price,
+            "stop_loss": sl,
+            "take_profit": tp,
+            "rr": rr,
+            "volume": p['volume'],
+            "leverage": leverage,
+            "side": side
+        })
+
+    return sorted(results, key=lambda x: x['rr'], reverse=True)[:3]
 
