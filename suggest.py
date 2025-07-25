@@ -7,11 +7,11 @@ MIN_RR = 2.2
 def fetch_mexc_futures():
     url = "https://contract.mexc.com/api/v1/contract/kline"
     symbols_url = "https://contract.mexc.com/api/v1/contract/ticker"
-    
+
     try:
         symbols = requests.get(symbols_url, timeout=10).json().get("data", [])
         selected = [s for s in symbols if float(s['amount24']) >= MIN_VOLUME]
-        
+
         trades = []
         for sym in selected[:50]:
             pair = sym['symbol']
@@ -28,7 +28,7 @@ def fetch_mexc_futures():
             entry = float(klines[-1][4])  # last close
             sl, tp = calculate_sl_tp(entry, signal['side'], candles)
             rr = round(abs((tp - entry) / (entry - sl)), 2)
-            
+
             if rr >= MIN_RR:
                 trades.append({
                     "symbol": pair,
@@ -41,6 +41,7 @@ def fetch_mexc_futures():
                     "side": signal['side'],
                 })
         return sorted(trades, key=lambda x: x['rr'], reverse=True)[:3]
+
     except Exception as e:
         print("Error fetching data:", e)
         return []
@@ -62,16 +63,12 @@ def detect_signal(candles):
     upper_shadow = last['high'] - max(last['open'], last['close'])
     lower_shadow = min(last['open'], last['close']) - last['low']
 
-    # Hammer
     if lower_shadow > 2 * body and upper_shadow < 0.3 * body:
         return {"side": "long"}
-    # Inverted Hammer or Shooting Star
     elif upper_shadow > 2 * body and lower_shadow < 0.3 * body:
         return {"side": "short"}
-    # Bullish Engulfing
     elif prev['close'] < prev['open'] and last['close'] > last['open'] and last['close'] > prev['open'] and last['open'] < prev['close']:
         return {"side": "long"}
-    # Bearish Engulfing
     elif prev['close'] > prev['open'] and last['close'] < last['open'] and last['close'] < prev['open'] and last['open'] > prev['close']:
         return {"side": "short"}
 
