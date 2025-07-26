@@ -1,2 +1,2 @@
-BOT_TOKEN = "8060081170:AAGL3GZsRBhyFUuEQf1PYP-8azEnr3v_2sQ"                          
+TELEGRAM_BOT_TOKEN = "8060081170:AAGL3GZsRBhyFUuEQf1PYP-8azEnr3v_2sQ"                          
 ALLOWED_USER_IDS = [1048990805]            
