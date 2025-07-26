@@ -1,101 +1,84 @@
 import requests
+import random
 import pandas as pd
 import numpy as np
 import datetime
-import time
 
-MIN_VOLUME = 30_000_000  # lowered from 35M
-MIN_RR = 2.0             # lowered from 2.2
-CANDLE_COUNT = 30
-
-def fetch_mexc_futures():
-    url = "https://contract.mexc.com/api/v1/contract/ticker"
+def fetch_klines(symbol, interval='1m', limit=100):
+    url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        return response.json().get("data", [])
-    except Exception as e:
-        print("❌ Error fetching MEXC pairs:", e)
-        return []
-
-def fetch_ohlcv(symbol):
-    url = f"https://contract.mexc.com/api/v1/contract/kline/{symbol}?interval=1h&limit={CANDLE_COUNT}"
-    try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        data = response.json()['data']
-        df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "volume"])
-        df = df.astype(float)
+        response = requests.get(url)
+        data = response.json()
+        df = pd.DataFrame(data, columns=[
+            'time', 'open', 'high', 'low', 'close', 'volume',
+            'close_time', 'quote_asset_volume', 'trades', 'taker_base_vol', 'taker_quote_vol', 'ignore'
+        ])
+        df['close'] = df['close'].astype(float)
+        df['open'] = df['open'].astype(float)
+        df['high'] = df['high'].astype(float)
+        df['low'] = df['low'].astype(float)
         return df
     except Exception as e:
-        print(f"❌ Failed to fetch OHLCV for {symbol}:", e)
+        print(f"Error fetching {symbol}: {e}")
         return None
 
-def is_reversal_candle(row):
-    body = abs(row['close'] - row['open'])
-    candle_size = row['high'] - row['low']
-    if candle_size == 0:
-        return False
-    upper_shadow = row['high'] - max(row['close'], row['open'])
-    lower_shadow = min(row['close'], row['open']) - row['low']
-    # Hammer or Inverted Hammer
-    return lower_shadow > 2 * body or upper_shadow > 2 * body
+def is_bullish_engulfing(prev, curr):
+    return prev['close'] < prev['open'] and curr['close'] > curr['open'] and curr['close'] > prev['open'] and curr['open'] < prev['close']
 
-def find_sr_zones(df):
-    lows = df['low'].rolling(window=5, center=True).min()
-    highs = df['high'].rolling(window=5, center=True).max()
-    support = lows.iloc[-5:].min()
-    resistance = highs.iloc[-5:].max()
-    return round(support, 4), round(resistance, 4)
+def is_bearish_engulfing(prev, curr):
+    return prev['close'] > prev['open'] and curr['close'] < curr['open'] and curr['close'] < prev['open'] and curr['open'] > prev['close']
 
-def suggest_trades():
-    pairs = fetch_mexc_futures()
-    suggestions = []
+def detect_reversal(df):
+    if len(df) < 5:
+        return None
 
-    for p in pairs:
-        vol = float(p['amount24'])
-        if vol < MIN_VOLUME:
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
+
+    if is_bullish_engulfing(prev, last):
+        return 'long'
+    elif is_bearish_engulfing(prev, last):
+        return 'short'
+    return None
+
+def find_support_resistance(df):
+    recent_lows = df['low'].rolling(window=20).min()
+    recent_highs = df['high'].rolling(window=20).max()
+    return recent_lows.iloc[-1], recent_highs.iloc[-1]
+
+def get_trade_suggestions():
+    url = "https://api.mexc.com/api/v3/ticker/24hr"
+    res = requests.get(url).json()
+    coins = [coin['symbol'] for coin in res if 'USDT' in coin['symbol'] and not coin['symbol'].endswith('3S') and float(coin['quoteVolume']) > 35000000]
+
+    signals = []
+    for symbol in coins[:25]:  # scan only top 25 for speed
+        df = fetch_klines(symbol)
+        if df is None or len(df) < 30:
             continue
 
-        symbol = p['symbol']
-        entry = float(p['lastPrice'])
-        df = fetch_ohlcv(symbol)
-        if df is None or len(df) < CANDLE_COUNT:
+        signal = detect_reversal(df)
+        if not signal:
             continue
 
-        recent = df.iloc[-1]
-        sr_support, sr_resistance = find_sr_zones(df)
+        support, resistance = find_support_resistance(df)
+        current_price = df.iloc[-1]['close']
 
-        direction = None
-        if is_reversal_candle(recent):
-            if recent['low'] <= sr_support * 1.01:
-                direction = "long"
-            elif recent['high'] >= sr_resistance * 0.99:
-                direction = "short"
-
-        if not direction:
-            continue
-
-        rr = round(np.random.uniform(MIN_RR, 3.0), 2)
-
-        if direction == "long":
-            stop_loss = round(entry * 0.985, 4)
-            take_profit = round(entry + (entry - stop_loss) * rr, 4)
+        if signal == 'long':
+            sl = support
+            tp = current_price + (current_price - sl) * 2.2
         else:
-            stop_loss = round(entry * 1.015, 4)
-            take_profit = round(entry - (stop_loss - entry) * rr, 4)
+            sl = resistance
+            tp = current_price - (sl - current_price) * 2.2
 
-        suggestions.append({
-            "symbol": symbol,
-            "entry": entry,
-            "stop_loss": stop_loss,
-            "take_profit": take_profit,
-            "rr": rr,
-            "volume": vol,
-            "leverage": 3,
-        })
+        rr = abs(tp - current_price) / abs(current_price - sl)
+        if rr < 2.2:
+            continue
 
-    return sorted(suggestions, key=lambda x: x['rr'], reverse=True)[:3]
+        direction_emoji = "🟢 LONG" if signal == 'long' else "🔴 SHORT"
+        signals.append(f"{direction_emoji} {symbol}\nEntry: {round(current_price, 4)}\nSL: {round(sl, 4)}\nTP: {round(tp, 4)}\nRR: {round(rr, 2)}")
+
+    return signals
 
 
 
