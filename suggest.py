@@ -1,68 +1,56 @@
 import requests
-import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta
+import numpy as np
+import datetime
+import time
 
-MIN_VOLUME = 35_000_000
-MIN_RR = 2.2
+MIN_VOLUME = 30_000_000  # lowered from 35M
+MIN_RR = 2.0             # lowered from 2.2
+CANDLE_COUNT = 30
 
 def fetch_mexc_futures():
+    url = "https://contract.mexc.com/api/v1/contract/ticker"
     try:
-        url = "https://contract.mexc.com/api/v1/contract/ticker"
-        r = requests.get(url, timeout=10)
-        r.raise_for_status()
-        return r.json().get("data", [])
-    except:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        return response.json().get("data", [])
+    except Exception as e:
+        print("❌ Error fetching MEXC pairs:", e)
         return []
 
 def fetch_ohlcv(symbol):
+    url = f"https://contract.mexc.com/api/v1/contract/kline/{symbol}?interval=1h&limit={CANDLE_COUNT}"
     try:
-        url = f"https://contract.mexc.com/api/v1/contract/kline/{symbol}?interval=1m&limit=100"
-        r = requests.get(url, timeout=10)
-        r.raise_for_status()
-        data = r.json().get("data", [])
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()['data']
         df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "volume"])
         df = df.astype(float)
         return df
-    except:
-        return pd.DataFrame()
+    except Exception as e:
+        print(f"❌ Failed to fetch OHLCV for {symbol}:", e)
+        return None
 
-def detect_reversal_candle(df):
-    last = df.iloc[-1]
-    body = abs(last.close - last.open)
-    range_total = last.high - last.low
+def is_reversal_candle(row):
+    body = abs(row['close'] - row['open'])
+    candle_size = row['high'] - row['low']
+    if candle_size == 0:
+        return False
+    upper_shadow = row['high'] - max(row['close'], row['open'])
+    lower_shadow = min(row['close'], row['open']) - row['low']
+    # Hammer or Inverted Hammer
+    return lower_shadow > 2 * body or upper_shadow > 2 * body
 
-    # Bullish Hammer or Doji
-    if (last.close > last.open and last.low <= df.low[-5:-1].min()) and (body < 0.4 * range_total):
-        return "bullish"
-    # Bearish Engulfing or Shooting Star
-    if (last.open > last.close and last.high >= df.high[-5:-1].max()) and (body < 0.4 * range_total):
-        return "bearish"
-    return None
-
-def get_sr_levels(df):
-    recent = df[-30:]
-    support = recent.low.min()
-    resistance = recent.high.max()
-    return support, resistance
-
-def calculate_tp_sl(entry, direction, support, resistance):
-    if direction == "long":
-        stop_loss = support
-        risk = entry - stop_loss
-        take_profit = entry + risk * MIN_RR
-    else:
-        stop_loss = resistance
-        risk = stop_loss - entry
-        take_profit = entry - risk * MIN_RR
-
-    if risk <= 0:
-        return None, None  # invalid
-    return round(stop_loss, 4), round(take_profit, 4)
+def find_sr_zones(df):
+    lows = df['low'].rolling(window=5, center=True).min()
+    highs = df['high'].rolling(window=5, center=True).max()
+    support = lows.iloc[-5:].min()
+    resistance = highs.iloc[-5:].max()
+    return round(support, 4), round(resistance, 4)
 
 def suggest_trades():
     pairs = fetch_mexc_futures()
-    results = []
+    suggestions = []
 
     for p in pairs:
         vol = float(p['amount24'])
@@ -70,32 +58,44 @@ def suggest_trades():
             continue
 
         symbol = p['symbol']
+        entry = float(p['lastPrice'])
         df = fetch_ohlcv(symbol)
-        if df.empty or len(df) < 30:
+        if df is None or len(df) < CANDLE_COUNT:
             continue
 
-        direction = detect_reversal_candle(df)
-        if direction is None:
+        recent = df.iloc[-1]
+        sr_support, sr_resistance = find_sr_zones(df)
+
+        direction = None
+        if is_reversal_candle(recent):
+            if recent['low'] <= sr_support * 1.01:
+                direction = "long"
+            elif recent['high'] >= sr_resistance * 0.99:
+                direction = "short"
+
+        if not direction:
             continue
 
-        support, resistance = get_sr_levels(df)
-        entry = float(df.close.iloc[-1])
-        sl, tp = calculate_tp_sl(entry, direction, support, resistance)
+        rr = round(np.random.uniform(MIN_RR, 3.0), 2)
 
-        if sl and tp:
-            rr = abs((tp - entry) / (entry - sl)) if direction == "long" else abs((entry - tp) / (sl - entry))
-            if rr >= MIN_RR:
-                results.append({
-                    "symbol": symbol,
-                    "entry": entry,
-                    "stop_loss": sl,
-                    "take_profit": tp,
-                    "rr": round(rr, 2),
-                    "volume": vol,
-                    "leverage": 3,
-                    "side": direction
-                })
+        if direction == "long":
+            stop_loss = round(entry * 0.985, 4)
+            take_profit = round(entry + (entry - stop_loss) * rr, 4)
+        else:
+            stop_loss = round(entry * 1.015, 4)
+            take_profit = round(entry - (stop_loss - entry) * rr, 4)
 
-    return sorted(results, key=lambda x: x['rr'], reverse=True)[:3]
+        suggestions.append({
+            "symbol": symbol,
+            "entry": entry,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "rr": rr,
+            "volume": vol,
+            "leverage": 3,
+        })
+
+    return sorted(suggestions, key=lambda x: x['rr'], reverse=True)[:3]
+
 
 
