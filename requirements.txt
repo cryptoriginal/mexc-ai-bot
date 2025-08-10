@@ -1,0 +1,8 @@
+python-telegram-bot==20.3
+python-dotenv==1.0.0
+requests==2.31.0
+pandas==2.0.3
+numpy==1.25.2
+TA-Lib==0.4.27  # Note: This requires TA-Lib C library to be installed first
+mexc-sdk==1.0.0
+matplotlib==3.7.2  # For chart generation
