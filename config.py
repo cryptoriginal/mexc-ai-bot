@@ -1,7 +1,7 @@
 # config.py - fill your secrets and basic settings here
 
 # TELEGRAM BOT
-TELEGRAM_TOKEN = "REPLACE_WITH_YOUR_TELEGRAM_BOT_TOKEN"
+TELEGRAM_TOKEN = "8060081170:AAGL3GZsRBhyFUuEQf1PYP-8azEnr3v_2sQ"
 
 # EXCHANGE: using CCXT exchange id (e.g., "mexc", "binance")
 # For MEXC, in CCXT it's typically "mexc" or "mexc3" depending on CCXT version; try "mexc".
